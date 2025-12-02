@@ -1,12 +1,7 @@
 ---
 import Layout from '../layouts/Layout.astro';
 import ParticipantList from '../components/ParticipantList.jsx';
-import AuthComponent from '../components/Auth.jsx';
 ---
 <Layout title="Lucky Draw">
-  
-  <AuthComponent client:only="react" />
-
-  <hr class="my-12" /> <ParticipantList client:load />
-
+  <ParticipantList client:only="react" />
 </Layout>

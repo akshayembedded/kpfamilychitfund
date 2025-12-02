@@ -1,0 +1,18 @@
+---
+import Layout from '../layouts/Layout.astro';
+import HistoryList from '../components/HistoryList.jsx';
+---
+<Layout title="Draw History">
+  <div class="text-center mb-8">
+    <h1 class="text-4xl font-bold text-emerald-800">Past Winners</h1>
+    <p class="text-gray-600 mt-2">A record of all our lucky winners.</p>
+  </div>
+
+  <HistoryList client:only="react" />
+
+  <div class="text-center mt-8">
+    <a href="/lucky-draw" class="text-emerald-600 hover:underline font-medium">
+      &larr; Back to Lucky Draw
+    </a>
+  </div>
+</Layout>
