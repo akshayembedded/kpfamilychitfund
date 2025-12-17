@@ -1,11 +1,11 @@
 ﻿import React, { useState, useEffect } from 'react';
 import Confetti from 'react-confetti';
 import { db, auth, googleProvider } from '../lib/firebase';
-import { collection, addDoc, onSnapshot, query, orderBy, doc, updateDoc, setDoc, getDoc, where, deleteDoc, getDocs } from 'firebase/firestore';
+import { collection, addDoc, onSnapshot, query, orderBy, doc, updateDoc, setDoc, getDoc, where, deleteDoc } from 'firebase/firestore';
 import { signInWithPopup, signOut } from 'firebase/auth';
 
 // ==================================================================
-// 🔐 SECURITY & CONFIGURATION
+// ≡ƒöÉ SECURITY & CONFIGURATION
 // ==================================================================
 
 const ADMIN_EMAILS = (import.meta.env.PUBLIC_ADMIN_EMAILS || '').split(',');
@@ -36,13 +36,10 @@ export default function ParticipantList() {
 
   // STATE
   const [newName, setNewName] = useState('');
-  const [winner, setWinner] = useState(null);
-  const [numWinnersToSelect, setNumWinnersToSelect] = useState(1);
-  const [allPastWinners, setAllPastWinners] = useState([]);
+  const [winner, setWinner] = useState(null); // The winner for the SELECTED month
 
   // ANIMATION STATE
   const [isSpinning, setIsSpinning] = useState(false);
-  const [countDown, setCountDown] = useState(null);
   const [spinningName, setSpinningName] = useState('');
   const [copyMsg, setCopyMsg] = useState('');
   const [intervalId, setIntervalId] = useState(null);
@@ -76,8 +73,6 @@ export default function ParticipantList() {
             setGuestToken(token);
             setIsGuestSpinner(true);
             setGuestLinkValid(true);
-            if (tokenData.cycle) setSelectedCycle(tokenData.cycle);
-            if (tokenData.month) setSelectedMonth(tokenData.month);
           } else {
             alert('This guest link has expired. Please request a new one from the admin.');
             setGuestLinkValid(false);
@@ -87,6 +82,10 @@ export default function ParticipantList() {
           setGuestLinkValid(false);
         }
       });
+    } else if (urlParams.get('guest') === 'true') {
+      // Old style guest link (for backward compatibility)
+      setIsGuestSpinner(true);
+      setGuestLinkValid(true);
     }
 
     const unsubscribe = auth.onAuthStateChanged((currentUser) => {
@@ -108,6 +107,8 @@ export default function ParticipantList() {
   // 2. FETCH PARTICIPANTS (Filtered by CYCLE)
   useEffect(() => {
     setLoading(true);
+    // Note: Removed orderBy("createdAt") to avoid needing a composite index immediately.
+    // We sort client-side instead.
     const q = query(
       collection(db, "participants"),
       where("cycle_id", "==", selectedCycle)
@@ -115,7 +116,10 @@ export default function ParticipantList() {
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      list.sort((a, b) => a.name.localeCompare(b.name));
+
+      // Sort client-side: Newest first
+      list.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+
       setParticipants(list);
       setLoading(false);
     }, (error) => {
@@ -147,6 +151,7 @@ export default function ParticipantList() {
     const q = query(collection(db, "guestTokens"), orderBy("createdAt", "desc"));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const links = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      // Filter out expired links
       const now = Date.now();
       const validLinks = links.filter(link => {
         const expiresAt = link.expiresAt?.seconds * 1000;
@@ -157,38 +162,6 @@ export default function ParticipantList() {
     return () => unsubscribe();
   }, [isAdmin]);
 
-  // 4.5. FETCH ALL PAST WINNERS FOR CURRENT CYCLE (to prevent repeats)
-  useEffect(() => {
-    const fetchAllPastWinners = async () => {
-      try {
-        const q = query(
-          collection(db, "draws"),
-          where("cycle_id", "==", selectedCycle)
-        );
-        const snapshot = await getDocs(q);
-
-        const winnerIds = new Set();
-        snapshot.docs.forEach(doc => {
-          const data = doc.data();
-          // Handle new format (winners array)
-          if (data.winners && Array.isArray(data.winners)) {
-            data.winners.forEach(w => winnerIds.add(w.id));
-          }
-          // Handle old format (single winner_id)
-          if (data.winner_id) {
-            winnerIds.add(data.winner_id);
-          }
-        });
-
-        setAllPastWinners(Array.from(winnerIds));
-      } catch (error) {
-        console.error("Error fetching past winners:", error);
-      }
-    };
-
-    fetchAllPastWinners();
-  }, [selectedCycle]);
-
   // 5. REALTIME LISTENER FOR "SPINNING STATE"
   useEffect(() => {
     const gameStateRef = doc(db, "config", "gameState");
@@ -197,19 +170,19 @@ export default function ParticipantList() {
       if (docSnapshot.exists()) {
         const state = docSnapshot.data();
 
+        // Only spin if the active spin matches our current view context (optional, but good for safety)
+        // For now, global spin is fine.
         if (state.isSpinning) {
-          if (state.cycle_id === selectedCycle && state.month === selectedMonth) {
-            if (!isSpinning) {
-              setIsSpinning(true);
-              setCountDown(3);
-            }
-          } else {
-            setIsSpinning(false);
-            setCountDown(null);
+          setIsSpinning(true);
+          // Don't hide winner immediately here, UI handles it
+          if (!intervalId) {
+            const id = setInterval(() => {
+              setSpinningName(prev => "Spinning...");
+            }, 100);
+            setIntervalId(id);
           }
         } else {
           setIsSpinning(false);
-          setCountDown(null);
           if (intervalId) {
             clearInterval(intervalId);
             setIntervalId(null);
@@ -218,27 +191,7 @@ export default function ParticipantList() {
       }
     });
     return () => unsubscribe();
-  }, [selectedCycle, selectedMonth, isSpinning]);
-
-  // Countdown Timer Effect
-  useEffect(() => {
-    if (isSpinning && countDown > 0) {
-      const timer = setTimeout(() => setCountDown(prev => prev - 1), 1000);
-      return () => clearTimeout(timer);
-    }
-  }, [isSpinning, countDown]);
-
-  // FULLSCREEN TOGGLE
-  const toggleFullScreen = () => {
-    const elem = document.getElementById('lucky-draw-container');
-    if (!document.fullscreenElement) {
-      elem.requestFullscreen().catch(err => {
-        alert(`Error attempting to enable full-screen mode: ${err.message} (${err.name})`);
-      });
-    } else {
-      document.exitFullscreen();
-    }
-  };
+  }, []);
 
   // 6. LOAD CYCLES FROM FIRESTORE
   useEffect(() => {
@@ -251,25 +204,17 @@ export default function ParticipantList() {
     return () => unsubscribe();
   }, []);
 
-  // Flash names animation (Only after countdown)
+  // Flash names animation
   useEffect(() => {
-    if (isSpinning && countDown === 0 && participants.length > 0) {
+    if (isSpinning && participants.length > 0) {
       const id = setInterval(() => {
-        // Only show eligible participants (exclude past winners and current month winners)
-        const currentWinners = winner?.winners || [];
-        const eligible = participants.filter(p =>
-          !currentWinners.some(w => w.id === p.id) &&
-          !allPastWinners.includes(p.id)
-        );
-
-        if (eligible.length > 0) {
-          const randomIdx = Math.floor(Math.random() * eligible.length);
-          setSpinningName(eligible[randomIdx].name);
-        }
+        const randomIdx = Math.floor(Math.random() * participants.length);
+        setSpinningName(participants[randomIdx].name);
       }, 80);
       return () => clearInterval(id);
     }
-  }, [isSpinning, countDown, participants, winner, allPastWinners]);
+  }, [isSpinning, participants]);
+
 
   // ACTIONS
   const handleLogin = async () => {
@@ -294,48 +239,30 @@ export default function ParticipantList() {
     await deleteDoc(doc(db, "participants", id));
   };
 
-  const handleStartSpin = async () => {
+  const handlePickWinner = async () => {
     if ((!isAdmin && !isGuestSpinner) || participants.length === 0) return;
+    if (winner) return; // Already has a winner
 
-    const currentWinners = winner?.winners || [];
-    if (currentWinners.length >= numWinnersToSelect) return;
+    await setDoc(doc(db, "config", "gameState"), { isSpinning: true });
 
-    await setDoc(doc(db, "config", "gameState"), {
-      isSpinning: true,
-      cycle_id: selectedCycle,
-      month: selectedMonth
-    });
-
-    // Auto-draw after 10 seconds
     setTimeout(async () => {
-      await executeDraw();
-    }, 10000);
-  };
+      // Pick a random winner
+      const randomIdx = Math.floor(Math.random() * participants.length);
+      const winnerData = participants[randomIdx];
 
-  const executeDraw = async () => {
-    const currentWinners = winner?.winners || [];
-    // Exclude both current month winners AND all past winners from other months
-    const available = participants.filter(p =>
-      !currentWinners.some(w => w.id === p.id) &&
-      !allPastWinners.includes(p.id)
-    );
+      // Save to 'draws' collection
+      const drawId = `${selectedCycle}_${selectedMonth.replace(/\s/g, '')}`;
+      await setDoc(doc(db, "draws", drawId), {
+        cycle_id: selectedCycle,
+        month: selectedMonth,
+        winner_id: winnerData.id,
+        winner_name: winnerData.name,
+        timestamp: new Date()
+      });
 
-    if (available.length === 0) return;
+      await setDoc(doc(db, "config", "gameState"), { isSpinning: false });
 
-    const randomIdx = Math.floor(Math.random() * available.length);
-    const newWinner = available[randomIdx];
-
-    const newWinnersList = [...currentWinners, { id: newWinner.id, name: newWinner.name }];
-
-    const drawId = `${selectedCycle}_${selectedMonth.replace(/\s/g, '')}`;
-    await setDoc(doc(db, "draws", drawId), {
-      cycle_id: selectedCycle,
-      month: selectedMonth,
-      winners: newWinnersList,
-      timestamp: new Date()
-    });
-
-    await setDoc(doc(db, "config", "gameState"), { isSpinning: false });
+    }, 3000);
   };
 
   const handleReset = async () => {
@@ -347,9 +274,11 @@ export default function ParticipantList() {
   };
 
   const copyGuestLink = async () => {
+    // Generate a unique token
     const token = Math.random().toString(36).substring(2) + Date.now().toString(36);
-    const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes from now
 
+    // Store token in Firestore
     await setDoc(doc(db, "guestTokens", token), {
       createdAt: new Date(),
       expiresAt: expiresAt,
@@ -388,6 +317,7 @@ export default function ParticipantList() {
     const newCycles = [...availableCycles, newCycleName].sort();
     setAvailableCycles(newCycles);
 
+    // Store in Firestore
     await setDoc(doc(db, "config", "cycles"), {
       cycles: newCycles,
       updatedAt: new Date()
@@ -420,6 +350,7 @@ export default function ParticipantList() {
             <h2 className="text-3xl font-bold bg-gradient-to-r from-teal-600 to-emerald-600 bg-clip-text text-transparent">KP Family Chit Fund</h2>
             {!isGuestSpinner && (
               <div className="flex gap-2 mt-2">
+                {/* CYCLE SELECTOR */}
                 <select
                   value={selectedCycle}
                   onChange={(e) => setSelectedCycle(e.target.value)}
@@ -428,6 +359,7 @@ export default function ParticipantList() {
                   {availableCycles.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
 
+                {/* MONTH SELECTOR */}
                 <select
                   value={selectedMonth}
                   onChange={(e) => setSelectedMonth(e.target.value)}
@@ -438,6 +370,7 @@ export default function ParticipantList() {
               </div>
             )}
 
+            {/* Guest users see current selection only */}
             {isGuestSpinner && (
               <p className="text-teal-600 font-semibold mt-2">
                 {selectedCycle} - {selectedMonth}
@@ -476,19 +409,19 @@ export default function ParticipantList() {
                 onClick={copyGuestLink}
                 className="bg-white border-2 border-teal-300 px-4 py-2 rounded-lg hover:bg-teal-50 text-teal-700 font-semibold shadow-sm hover:shadow-md transition-all text-sm"
               >
-                🔗 Generate Guest Link
+                ≡ƒöù Generate Guest Link
               </button>
               <button
                 onClick={() => setShowGuestLinks(!showGuestLinks)}
                 className="bg-white border-2 border-teal-300 px-4 py-2 rounded-lg hover:bg-teal-50 text-teal-700 font-semibold shadow-sm hover:shadow-md transition-all text-sm"
               >
-                {showGuestLinks ? '▼' : '▶'} Active Links ({activeGuestLinks.length})
+                {showGuestLinks ? 'Γû╝' : 'Γû╢'} Active Links ({activeGuestLinks.length})
               </button>
               <button
                 onClick={() => setShowAddCycle(!showAddCycle)}
                 className="bg-gradient-to-r from-teal-500 to-emerald-500 text-white px-4 py-2 rounded-lg font-semibold shadow-sm hover:shadow-md transition-all text-sm"
               >
-                ➕ New Cycle
+                Γ₧ò New Cycle
               </button>
             </div>
           </div>
@@ -499,7 +432,7 @@ export default function ParticipantList() {
                 <div key={link.id} className="flex justify-between items-center p-2 bg-gray-50 rounded border border-gray-200">
                   <div className="text-xs">
                     <span className="font-semibold text-gray-700">{link.cycle} - {link.month}</span>
-                    <span className="text-gray-500 ml-2">• Expires in {formatTimeRemaining(link.expiresAt)}</span>
+                    <span className="text-gray-500 ml-2">ΓÇó Expires in {formatTimeRemaining(link.expiresAt)}</span>
                   </div>
                   <button
                     onClick={() => revokeGuestLink(link.id)}
@@ -544,74 +477,28 @@ export default function ParticipantList() {
       )}
 
       {/* LUCKY DRAW AREA */}
-      <div id="lucky-draw-container" className="bg-gradient-to-br from-teal-50 via-emerald-50 to-cyan-50 rounded-3xl p-8 text-center shadow-xl mb-8 border-2 border-teal-200 min-h-[250px] flex flex-col justify-center relative overflow-hidden group">
+      <div className="bg-gradient-to-br from-teal-50 via-emerald-50 to-cyan-50 rounded-3xl p-8 text-center shadow-xl mb-8 border-2 border-teal-200 min-h-[250px] flex flex-col justify-center relative overflow-hidden">
         <div className="absolute inset-0 bg-gradient-to-br from-teal-100/20 to-transparent"></div>
 
-        {/* Fullscreen Toggle Button */}
-        <button
-          onClick={toggleFullScreen}
-          className="absolute top-4 right-4 text-teal-600 hover:text-teal-800 opacity-0 group-hover:opacity-100 transition-opacity z-20"
-          title="Toggle Fullscreen"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
-          </svg>
-        </button>
+        <h3 className="text-teal-700 font-bold uppercase tracking-widest mb-4 opacity-80 relative z-10">
+          {selectedMonth} Draw
+        </h3>
 
         {/* VIEW 1: SPINNING (Priority View) */}
         {isSpinning ? (
-          countDown > 0 ? (
-            <div>
-              <p className="text-emerald-600 font-bold mb-4 animate-pulse relative z-10">GET READY...</p>
-              <h1 className="text-9xl font-black text-transparent bg-clip-text bg-gradient-to-r from-teal-600 to-emerald-600 mt-2 relative z-10 scale-150 transition-all duration-500">
-                {countDown}
-              </h1>
-            </div>
-          ) : (
-            <div>
-              <p className="text-emerald-600 font-bold mb-4 animate-pulse relative z-10 text-2xl md:text-3xl">DRUM ROLL...</p>
-              <h1 className="text-6xl md:text-8xl lg:text-9xl font-black text-black mt-2 relative z-10">{spinningName}</h1>
-            </div>
-          )
+          <div>
+            <p className="text-emerald-600 font-bold mb-4 animate-pulse relative z-10">DRUM ROLL...</p>
+            <h1 className="text-5xl font-black text-emerald-600 mt-2 relative z-10">{spinningName}</h1>
+          </div>
         ) : (
           /* VIEW 2: WINNER or WAITING */
           winner ? (
-            <div className="relative z-10">
-              <div className="animate-bounce">
-                <h3 className="text-xl text-emerald-600 font-semibold uppercase tracking-wide">
-                  {winner.winners && winner.winners.length > 1 ? 'The Winners Are' : 'The Winner Is'}
-                </h3>
-                {winner.winners ? (
-                  <div className="flex flex-col gap-2 mt-2">
-                    {winner.winners.map((w, idx) => (
-                      <h1 key={idx} className="text-6xl md:text-8xl font-black text-green-900">
-                        {w.name}
-                      </h1>
-                    ))}
-                  </div>
-                ) : (
-                  <h1 className="text-7xl md:text-9xl font-black text-green-900 mt-2">
-                    {winner.winner_name}
-                  </h1>
-                )}
-              </div>
-
-              {/* IF we need more winners, show Pick Button */}
-              {(isAdmin || isGuestSpinner) && (winner.winners || []).length < numWinnersToSelect && (
-                <button
-                  onClick={handleStartSpin}
-                  className="mt-8 bg-emerald-500 text-white px-8 py-3 rounded-full font-bold text-xl shadow-xl hover:bg-emerald-600 transform hover:scale-105 transition relative z-20"
-                >
-                  PICK NEXT WINNER
-                </button>
-              )}
-
+            <div className="animate-bounce relative z-10">
+              <h3 className="text-xl text-emerald-600 font-semibold uppercase tracking-wide">The Winner Is</h3>
+              <h1 className="text-5xl font-black text-emerald-900 mt-2">{winner.winner_name}</h1>
               {isAdmin && (
-                <button
-                  onClick={handleReset}
-                  className="mt-8 bg-red-500 text-white px-6 py-2 rounded-full font-bold text-sm shadow-lg hover:bg-red-600 transform hover:scale-105 transition relative z-20"
-                >
-                  🔄 Reset Draw
+                <button onClick={handleReset} className="mt-6 text-xs text-gray-400 underline hover:text-red-500">
+                  Reset Draw
                 </button>
               )}
             </div>
@@ -621,27 +508,12 @@ export default function ParticipantList() {
               <p className="text-gray-400 mb-6">No winner selected yet.</p>
 
               {(isAdmin || isGuestSpinner) && participants.length > 0 && (
-                <div className="flex flex-col items-center gap-4">
-                  {isAdmin && (
-                    <div className="flex items-center gap-2 bg-white/50 px-4 py-2 rounded-full">
-                      <label className="text-teal-800 font-bold text-sm">Winners:</label>
-                      <select
-                        value={numWinnersToSelect}
-                        onChange={(e) => setNumWinnersToSelect(Number(e.target.value))}
-                        className="bg-white border border-teal-200 text-teal-900 text-sm rounded-lg focus:ring-teal-500 focus:border-teal-500 block p-1 font-bold"
-                      >
-                        {[1, 2, 3, 4, 5].map(n => <option key={n} value={n}>{n}</option>)}
-                      </select>
-                    </div>
-                  )}
-
-                  <button
-                    onClick={handleStartSpin}
-                    className="bg-emerald-500 text-white px-8 py-4 rounded-full font-bold text-xl shadow-xl hover:bg-emerald-600 transform hover:scale-105 transition"
-                  >
-                    {isGuestSpinner ? '✨ SPIN THE WHEEL ✨' : 'PICK WINNER'}
-                  </button>
-                </div>
+                <button
+                  onClick={handlePickWinner}
+                  className="bg-emerald-500 text-white px-8 py-4 rounded-full font-bold text-xl shadow-xl hover:bg-emerald-600 transform hover:scale-105 transition"
+                >
+                  {isGuestSpinner ? 'Γ£¿ SPIN THE WHEEL Γ£¿' : 'PICK WINNER'}
+                </button>
               )}
 
               {!isAdmin && !isGuestSpinner && (
@@ -658,7 +530,7 @@ export default function ParticipantList() {
           <input
             value={newName}
             onChange={e => setNewName(e.target.value)}
-            placeholder={`✨ Add Participant to ${selectedCycle}`}
+            placeholder={`Γ£¿ Add Participant to ${selectedCycle}`}
             className="border-2 border-teal-200 bg-gradient-to-br from-teal-50 to-white p-3 rounded-xl flex-grow focus:ring-2 focus:ring-teal-400 focus:border-teal-400 outline-none transition-all"
           />
           <button type="submit" className="bg-gradient-to-r from-teal-600 to-emerald-600 text-white px-8 py-3 rounded-xl font-bold hover:from-teal-700 hover:to-emerald-700 shadow-lg hover:shadow-xl transform hover:scale-105 transition-all">
@@ -674,49 +546,33 @@ export default function ParticipantList() {
           <span>CYCLE: {selectedCycle}</span>
         </div>
         <ul className="divide-y divide-gray-100">
-          {participants.map((p, index) => {
-            const isCurrentWinner = winner && (
-              (winner.winners && winner.winners.some(w => w.id === p.id)) ||
-              (winner.winner_id === p.id)
-            );
-            const isPastWinner = allPastWinners.includes(p.id) && !isCurrentWinner;
+          {participants.map((p, index) => (
+            <li key={p.id} className="p-4 flex justify-between items-center hover:bg-gray-50 transition group">
+              <div className="flex items-center gap-3">
+                <span className="bg-gradient-to-br from-teal-400 to-emerald-400 text-white text-xs font-bold w-7 h-7 flex items-center justify-center rounded-full shadow-md">
+                  {index + 1}
+                </span>
+                <span className="font-medium text-gray-800">{p.name}</span>
+                {/* Highlight if they are the winner of THIS month */}
+                {winner && winner.winner_id === p.id && (
+                  <span className="bg-yellow-300 text-yellow-900 text-[10px] font-bold px-2 py-0.5 rounded-full">WINNER</span>
+                )}
+              </div>
 
-            return (
-              <li key={p.id} className={`p-4 flex justify-between items-center hover:bg-gray-50 transition group ${isPastWinner ? 'opacity-50 grayscale-[0.5]' : ''}`}>
-                <div className="flex items-center gap-3">
-                  <span className={`text-white text-xs font-bold w-7 h-7 flex items-center justify-center rounded-full shadow-md ${isPastWinner ? 'bg-gray-400' : 'bg-gradient-to-br from-teal-400 to-emerald-400'}`}>
-                    {index + 1}
-                  </span>
-                  <span className={`font-medium ${isPastWinner ? 'text-gray-500 line-through decoration-gray-300' : 'text-gray-800'}`}>{p.name}</span>
-
-                  {/* Current Winner Badge */}
-                  {isCurrentWinner && (
-                    <span className="bg-yellow-300 text-yellow-900 text-[10px] font-bold px-2 py-0.5 rounded-full animate-pulse">WINNER</span>
-                  )}
-
-                  {/* Past Winner Icon */}
-                  {isPastWinner && (
-                    <span className="text-base" title="Past Winner">🏆</span>
-                  )}
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <span className={`text-xs px-2 py-1 rounded ${isPastWinner ? 'bg-gray-100 text-gray-400' : 'bg-emerald-100 text-emerald-700'}`}>
-                    {isPastWinner ? 'Done' : 'Active'}
-                  </span>
-                  {(isAdmin || canAdd) && (
-                    <button
-                      onClick={() => handleDelete(p.id)}
-                      className="text-red-400 hover:text-red-600 opacity-0 group-hover:opacity-100 transition px-2"
-                      title="Delete Participant"
-                    >
-                      ✕
-                    </button>
-                  )}
-                </div>
-              </li>
-            );
-          })}
+              <div className="flex items-center gap-2">
+                <span className="text-xs bg-gray-100 text-gray-500 px-2 py-1 rounded">Active</span>
+                {(isAdmin || canAdd) && (
+                  <button
+                    onClick={() => handleDelete(p.id)}
+                    className="text-red-400 hover:text-red-600 opacity-0 group-hover:opacity-100 transition px-2"
+                    title="Delete Participant"
+                  >
+                    Γ£ò
+                  </button>
+                )}
+              </div>
+            </li>
+          ))}
           {participants.length === 0 && (
             <li className="p-8 text-center text-gray-400 italic">
               No participants found for {selectedCycle}. <br />

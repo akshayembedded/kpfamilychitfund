@@ -49,7 +49,11 @@ export default function HistoryList() {
                                 <tr key={winner.id} className="hover:bg-gray-50 transition">
                                     <td className="p-4 text-gray-500 text-sm">{winner.cycle_id}</td>
                                     <td className="p-4 font-medium text-gray-700">{winner.month}</td>
-                                    <td className="p-4 font-bold bg-gradient-to-r from-teal-600 to-emerald-600 bg-clip-text text-transparent text-lg">{winner.winner_name}</td>
+                                    <td className="p-4 font-bold bg-gradient-to-r from-teal-600 to-emerald-600 bg-clip-text text-transparent text-lg">
+                                        {winner.winners && Array.isArray(winner.winners)
+                                            ? winner.winners.map((w, idx) => <div key={idx}>{w.name}</div>)
+                                            : winner.winner_name}
+                                    </td>
                                     <td className="p-4 text-gray-500 text-sm">
                                         {winner.timestamp?.seconds ? new Date(winner.timestamp.seconds * 1000).toLocaleDateString() : 'N/A'}
                                     </td>

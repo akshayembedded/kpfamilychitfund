@@ -1,0 +1,58 @@
+﻿import React, { useState, useEffect } from 'react';
+import Confetti from 'react-confetti';
+import { db, auth, googleProvider } from '../lib/firebase';
+import { collection, addDoc, onSnapshot, query, orderBy, doc, updateDoc, setDoc, getDoc, where, deleteDoc } from 'firebase/firestore';
+import { signInWithPopup, signOut } from 'firebase/auth';
+
+// ==================================================================
+//  SECURITY & CONFIGURATION
+// ==================================================================
+
+const ADMIN_EMAILS = (import.meta.env.PUBLIC_ADMIN_EMAILS || '').split(',');
+const ALLOWED_EDITORS = (import.meta.env.PUBLIC_ALLOWED_EDITORS || '').split(',');
+
+const CYCLES = ["2025-2026", "2026-2027"];
+const MONTHS = [
+  "November 2025", "December 2025", "January 2026", "February 2026",
+  "March 2026", "April 2026", "May 2026", "June 2026",
+  "July 2026", "August 2026", "September 2026", "October 2026"
+];
+
+// ==================================================================
+
+export default function ParticipantList() {
+  const [participants, setParticipants] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [user, setUser] = useState(null);
+
+  // ROLES
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [canAdd, setCanAdd] = useState(false);
+  const [isGuestSpinner, setIsGuestSpinner] = useState(false);
+
+  // SELECTIONS
+  const [selectedCycle, setSelectedCycle] = useState("2025-2026");
+  const [selectedMonth, setSelectedMonth] = useState("November 2025");
+
+  // STATE
+  const [newName, setNewName] = useState('');
+  const [winner, setWinner] = useState(null);
+  const [numWinnersToSelect, setNumWinnersToSelect] = useState(1);
+
+  // ANIMATION STATE
+  const [isSpinning, setIsSpinning] = useState(false);
+  const [countDown, setCountDown] = useState(null);
+  const [spinningName, setSpinningName] = useState('');
+  const [copyMsg, setCopyMsg] = useState('');
+  const [intervalId, setIntervalId] = useState(null);
+
+  // GUEST LINK MANAGEMENT
+  const [guestToken, setGuestToken] = useState(null);
+  const [guestLinkValid, setGuestLinkValid] = useState(false);
+  const [activeGuestLinks, setActiveGuestLinks] = useState([]);
+  const [showGuestLinks, setShowGuestLinks] = useState(false);
+
+  // CYCLE MANAGEMENT
+  const [availableCycles, setAvailableCycles] = useState(CYCLES);
+  const [newCycleName, setNewCycleName] = useState('');
+  const [showAddCycle, setShowAddCycle] = useState(false);
